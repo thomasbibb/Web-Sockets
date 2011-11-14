@@ -1,14 +1,12 @@
 <?php
 
-/*
- * To change this template, choose Tools | Templates
- * and open the template in the editor.
- */
-
 /**
- * Description of WebSockets
+ * WebSockets is a new HTML5 draft which enables you the developer
+ * to push data in particular JSON to the remote user/browser.
  *
  * @author Thomas A. Bibb
+ * @version 0.1 
+ * 
  */
 class WebSocket {
     

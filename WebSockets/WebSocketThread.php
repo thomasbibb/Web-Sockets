@@ -1,15 +1,16 @@
 <?php
 
-/*
- * To change this template, choose Tools | Templates
- * and open the template in the editor.
- */
 
 /**
- * Description of SocketThread
+ * This class is a fundimental part of the WebSockets Server as each request
+ * requires is own indivudual thread so that its request can be processed 
+ * in parrallel with the listener thread.
  *
- * @author thomasbibb
+ * @author Thomas A. Bibb
+ * @version 0.1 
+ * 
  */
+
 class WebSocketThread {
    
     protected $threadId;

@@ -11,7 +11,7 @@
 class WebSocket {
     
     protected $_server = null;
-    protected $_sockets = array();
+    protected $_socketRead = array();
     protected $_serverVerbose = null;
     protected $_threads = array();
     protected $_log = array();
@@ -91,6 +91,9 @@ class WebSocket {
         $this->setLog("Server Started", self::VERBOSE_NORMAL);
         $this->setLog("Server socket  : ".$this->_server, self::VERBOSE_INFORMATIVE);
         
+        //Add socket to sockets array
+        $this->_sockets[] = $this->_server;
+        
         //Start the listener thread
         $listenerPid = pcntl_fork();  
         
@@ -104,34 +107,48 @@ class WebSocket {
             
         } else {
             while(true){
-              $changed = $sockets;
-              socket_select($changed,$write=NULL,$except=NULL,NULL);
-              foreach($changed as $socket){
-                if($socket==$master){
-                  $client=socket_accept($master);
-                  if($client<0){ console("socket_accept() failed"); continue; }
-                  else{ connect($client); }
-                }
-                else{
-                  $bytes = @socket_recv($socket,$buffer,2048,0);
-                  if($bytes==0){ disconnect($socket); }
-                  else{
+                
+              socket_select($this->_socketRead, $write=NULL, $except=NULL,NULL);
+              
+              foreach($this->_socketRead as $socket) {
+                
+                  if($socket == $this->_server) {
+                    $client = socket_accept($this->_server);
+                  
+                  if($client <0) { 
+                      console("socket_accept() failed"); 
+                      continue; 
+                  } else { 
+                      $this->createThread($client);
+                  }
+                } else {
+                  $bytes = @socket_recv($this->_server,$buffer,2048,0);
+                  
+                  if($bytes==0) { 
+                      $this->destoryThread($socket); 
+                  } else {
                     $user = getuserbysocket($socket);
-                    if(!$user->handshake){ dohandshake($user,$buffer); }
-                    else{ process($user,$buffer); }
+                    
+                    if(!$user->handshake){ 
+                        dohandshake($user,$buffer); 
+                    } else { 
+                        process($user,$buffer); 
+                    }
                   }
                 }
+                
               }
             }
         }
     }
         
-
     /**
      * Stops the listener process, the socket 
      * will remain binded. 
      * 
      * @param int $signal 
+     * @todo introduce a more elegent way of destorying the
+     * 
      */
     public function stopServer($signal=self::SIGTERM) {
         if (!in_array($signal, self::$signals)) {
@@ -139,6 +156,8 @@ class WebSocket {
         }
         
         posix_kill($this->_listener, $signal);
+        socket_close($this->_server);
+        unset($this->sockets);
     }
     
     /**
@@ -147,10 +166,25 @@ class WebSocket {
      * @param int $pid
      * @return WebSocketThread 
      */
-    public function createThread($pid) {
-        return $this->_threads[] = new WebSocketThread($pid);
+    public function createThread($socket) {
+        
+        $threadPid = pcntl_fork();  
+        
+        if ($threadPid == -1) {
+            throw new Exception(
+                    'Unable to create new connection thread'
+            );
+        } elseif ($threadPid) {
+            $this->_threads[$threadPid] = new WebSocketThread($threadPid, $socket);
+            $this->setLog("New thread created with PID {".$threadPid."} ", self::VERBOSE_INFORMATIVE);
+        } else {
+        
+        }
     }
     
+    public function destoryThread() {
+        
+    }
     
     /**
      * Signal a particular thread

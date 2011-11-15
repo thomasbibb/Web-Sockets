@@ -8,7 +8,7 @@
  * @version 0.1 
  * 
  */
-class WebSocket {
+class WebSocketServer {
     
     protected $_server = null;
     protected $_socketRead = array();
@@ -17,9 +17,10 @@ class WebSocket {
     protected $_log = array();
     protected $_listener = null;
     protected $_config = array();
+    protected $_fifoPipe;
     
     public static $verboseLevel;
-    public static $prerequsits;
+    public static $prerequisite;
     public static $signals;
     
     const VERBOSE_NORMAL = 10;
@@ -32,7 +33,7 @@ class WebSocket {
     public function __construct($port=8081, $address='127.0.0.1', $maxConn=20, 
             $verboseLevel=self::VERBOSE_NORMAL) {
         
-        $this->prerequsits();
+        $this->prerequisite();
         $this->initVerboseLevels();
 
         if (!in_array($verboseLevel, self::$verboseLevel)) {
@@ -44,8 +45,9 @@ class WebSocket {
         $this->_config = array(
             'port' => $port,
             'address' => $address,
-            'macConn' => $maxConn,
-            'verboseLevel' => $verboseLevel
+            'maxConn' => $maxConn,
+            'verboseLevel' => $verboseLevel,
+            'fifoPath' => 'fifo.input'
         );
         
         $this->_serverVerbose = $verboseLevel;
@@ -57,6 +59,8 @@ class WebSocket {
                 'Unknown config varibal {'.$name.'}'
             );
         }
+        
+        return $this->_config[$name];
     }
     
     public function startServer() {
@@ -70,7 +74,7 @@ class WebSocket {
             );
         }
                         
-        if(!socket_option($this->_server, SOL_SOCKET, SO_REUSEADDR)) {
+        if(!socket_set_option($this->_server, SOL_SOCKET, SO_REUSEADDR, 1)) {
             throw new Exception(
                     'Unable to set socket options'
             );
@@ -89,7 +93,7 @@ class WebSocket {
         }
         
         $this->setLog("Server Started", self::VERBOSE_NORMAL);
-        $this->setLog("Server socket  : ".$this->_server, self::VERBOSE_INFORMATIVE);
+        $this->setLog("Server socket : ".$this->_server, self::VERBOSE_INFORMATIVE);
         
         //Add socket to socketRead array
         $this->_socketRead[] = $this->_server;
@@ -103,11 +107,14 @@ class WebSocket {
             );
         } elseif ($listenerPid) {
             $this->_listener = $listenerPid;
-            $this->setLog("Listener processed started : ".$listenerPid, self::VERBOSE_INFORMATIVE);
-            
+            $this->setLog('Listening on {'.$this->address.':'.$this->port.'} with pid '. $listenerPid, self::VERBOSE_NORMAL);
         } else {
+            
+            $this->_fifoPipe = new fifoPipe($this->fifoPath, 0600);
             while(true){
                 
+              $this->pipeListener($this->_fifoPipe);
+                              
               socket_select($this->_socketRead, $write=NULL, $except=NULL,NULL);
               
               foreach($this->_socketRead as $socket) {
@@ -141,7 +148,31 @@ class WebSocket {
             }
         }
     }
+    
+    /**
+     * Listens to the fifo pipe for actions
+     * 
+     * @param fifoPipe $fifoPipe 
+     * @todo this should be a socket not a pipe
+     */
+    public function pipeListener(fifoPipe $fifoPipe) {
         
+        if(!$data = $fifoPipe->fifoPipeRead()) {
+            throw new Exception(
+                    'Broken fifo pipe'
+            );
+        }
+        
+        $data = json_decode($data);
+        
+        if (isset($data->server->state)) {
+            if ($data->server->state === false) {
+                $this->stopServer();
+            }
+        }
+    }
+    
+    
     /**
      * Stops the listener process and closes the socket.
      * 
@@ -149,18 +180,19 @@ class WebSocket {
      * @todo introduce a more elegent way of destorying the
      * sockets array.
      */
-    public function stopServer($signal=self::SIGTERM) {
-        if (!in_array($signal, self::$signals)) {
-            throw new Exception('Unknown signal');
-        }
+    public function stopServer() {
+        
+        $this->initSignals();
         
         foreach ($this->_threads as $thread) {
             socket_close($thread->getSocket());
         }
         
-        posix_kill($this->_listener, $signal);
+        posix_kill(getmypid(), $signal);
         socket_close($this->_server);
         unset($this->sockets);
+        
+        $this->setLog("Server Stopped", self::VERBOSE_INFORMATIVE);
     }
     
     /**
@@ -195,12 +227,32 @@ class WebSocket {
      * @param WebSocketThread $thread
      * @param int $signal 
      */
-    public function signalThread(WebSocketThread $thread, $signal) {
+    public function signalThread(WebSocketThread $thread, $signal) {       
         if (!in_array($signal, self::$signals)) {
-            throw new Exception('Unknown signal');
+            throw new Exception('Unknown process signal');
+        }
+        
+        //Gracefully halt the server
+        if ($signal===self::SIGTERM) {
+            
         }
         
         posix_kill($thread->getPid(), $signal);
+    }
+    
+    public function signalListnerThread($signal) {
+        
+        switch ($signal) {
+            case self::SIGTERM:
+                exit;
+                break;
+            case self::SIGKILL:
+                exit;
+                break;
+            case self::SIGHUP:
+                //do nothing
+        }
+        
     }
 
     /**
@@ -217,7 +269,7 @@ class WebSocket {
      * @return mixed array or string 
      */
     public function getLog($verboseLevel=self::VERBOSE_HIGH) {
-              
+        
         if (!in_array($verboseLevel, self::$verboseLevel)) {
             throw new Exception(
                     'Unknown verbose level {'.$verboseLevel.'}'
@@ -257,7 +309,6 @@ class WebSocket {
      * @return int msgId 
      */
     public function setLog($message, $verboseLevel) {
-        
         $this->_log[] = array(
             'timestamp'     => date('Y-m-d H:i:s'),
             'message'       => $message,
@@ -266,51 +317,62 @@ class WebSocket {
         
         echo '['.date('Y-m-d H:i:s').'] '.$message."\n";
         
-        return $i = count($this->_log) == 1 ? 0 : $i--;  
+        $i=0;
+        return $i = count($this->_log) == 1 ? 0 : $i-1;  
     }
       
     /**
-     * initialise verboseLevels
+     * lazy load verboseLevels
      */
     public function initVerboseLevels() {
-        self::$verboseLevel = array(
-            self::VERBOSE_NORMAL,
-            self::VERBOSE_INFORMATIVE,
-            self::VERBOSE_HIGH
-        );
+        if (self::$verboseLevel === null) {
+            self::$verboseLevel = array(
+                self::VERBOSE_NORMAL,
+                self::VERBOSE_INFORMATIVE,
+                self::VERBOSE_HIGH
+            );
+        }
     }
     
     /**
-     * initalise singals for processes
+     * lazy load singals for processes
      */
     public function initSignals() {
-        self::$signals = array(
-            self::SIGTERM,
-            self::SIGHUP,
-            self::SIGKILL
-        );
-        
-        foreach (self::$signals as $sig) {
-            pcntl_signal($sig, "sig_handler");
+        if (self::$signals === null) {
+            self::$signals = array(
+                self::SIGTERM,
+                self::SIGHUP,
+                self::SIGKILL
+            );
+
+            foreach (self::$signals as $sig) {
+                pcntl_signal($sig, array(&$this,"signalListnerThread"));
+            }
         }
     }
     
     /*
-     * initalise prerequsits
+     * lazy load application prerequisites
      */
-    public function initPrerequsits() {
-        self::$prerequsits = array(
-            'pcntl_fork'
-        );
+    public function initPrerequisite() {
+        if (self::$prerequisite === null) {
+            self::$prerequisite = array(
+                'pcntl_fork',
+                'socket_create',
+                'socket_select',
+                'socket_set_option',
+                'posix_mkfifo'
+            );
+        }
     }
     
     /*
      * check prerequsits are installed
      */
-    public function prerequsits() {
-        $this->initPrerequsits();
+    public function prerequisite() {
+        $this->initPrerequisite();
         
-        foreach (self::prerequisite as $preReq) {
+        foreach (self::$prerequisite as $preReq) {
             if (!function_exists($preReq)) {
                 throw new Exception(
                         $preReq.' functions not available, please install'

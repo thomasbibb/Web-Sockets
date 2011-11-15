@@ -91,8 +91,8 @@ class WebSocket {
         $this->setLog("Server Started", self::VERBOSE_NORMAL);
         $this->setLog("Server socket  : ".$this->_server, self::VERBOSE_INFORMATIVE);
         
-        //Add socket to sockets array
-        $this->_sockets[] = $this->_server;
+        //Add socket to socketRead array
+        $this->_socketRead[] = $this->_server;
         
         //Start the listener thread
         $listenerPid = pcntl_fork();  
@@ -143,16 +143,19 @@ class WebSocket {
     }
         
     /**
-     * Stops the listener process, the socket 
-     * will remain binded. 
+     * Stops the listener process and closes the socket.
      * 
      * @param int $signal 
      * @todo introduce a more elegent way of destorying the
-     * 
+     * sockets array.
      */
     public function stopServer($signal=self::SIGTERM) {
         if (!in_array($signal, self::$signals)) {
             throw new Exception('Unknown signal');
+        }
+        
+        foreach ($this->_threads as $thread) {
+            socket_close($thread->getSocket());
         }
         
         posix_kill($this->_listener, $signal);

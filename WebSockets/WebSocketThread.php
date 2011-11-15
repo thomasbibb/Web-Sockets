@@ -15,14 +15,18 @@ class WebSocketThread {
    
     protected $threadId;
     protected $pid;
+    protected $socket;
     
     
-    public function __construct($pid) {
+    public function __construct($pid, $socket) {
         $this->pid = $pid;
         $this->threadId = uniqid();
+        $this->socket = $socket;
     }
     
-    
+    public function getSocket () {
+        return $this->socket;
+    }
     
     
 }

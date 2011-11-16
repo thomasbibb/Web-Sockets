@@ -13,7 +13,7 @@ class WebSocketServer {
     protected $_server = null;
     protected $_socketRead = array();
     protected $_serverVerbose = null;
-    protected $_threads = array();
+    protected $_connection = array();
     protected $_log = array();
     protected $_listener = null;
     protected $_config = array();
@@ -108,12 +108,9 @@ class WebSocketServer {
         } elseif ($listenerPid) {
             $this->_listener = $listenerPid;
             $this->setLog('Listening on {'.$this->address.':'.$this->port.'} with pid '. $listenerPid, self::VERBOSE_NORMAL);
-        } else {
             
-            $this->_fifoPipe = new fifoPipe($this->fifoPath, 0600);
+        } else {
             while(true){
-                
-              $this->pipeListener($this->_fifoPipe);
                               
               socket_select($this->_socketRead, $write=NULL, $except=NULL,NULL);
               
@@ -126,13 +123,13 @@ class WebSocketServer {
                       console("socket_accept() failed"); 
                       continue; 
                   } else { 
-                      $this->createThread($client);
+                      $this->createConnection($client);
                   }
                 } else {
                   $bytes = @socket_recv($this->_server,$buffer,2048,0);
                   
                   if($bytes==0) { 
-                      $this->destoryThread($socket); 
+                      $this->destoryConnection($socket); 
                   } else {
                     $user = getuserbysocket($socket);
                     
@@ -147,34 +144,11 @@ class WebSocketServer {
               }
             }
         }
-    }
+    } 
     
     /**
-     * Listens to the fifo pipe for actions
-     * 
-     * @param fifoPipe $fifoPipe 
-     * @todo this should be a socket not a pipe
-     */
-    public function pipeListener(fifoPipe $fifoPipe) {
-        
-        if(!$data = $fifoPipe->fifoPipeRead()) {
-            throw new Exception(
-                    'Broken fifo pipe'
-            );
-        }
-        
-        $data = json_decode($data);
-        
-        if (isset($data->server->state)) {
-            if ($data->server->state === false) {
-                $this->stopServer();
-            }
-        }
-    }
-    
-    
-    /**
-     * Stops the listener process and closes the socket.
+     * Stops the listener process and closes all open sockets 
+     * by connection.
      * 
      * @param int $signal 
      * @todo introduce a more elegent way of destorying the
@@ -184,11 +158,12 @@ class WebSocketServer {
         
         $this->initSignals();
         
-        foreach ($this->_threads as $thread) {
-            socket_close($thread->getSocket());
+        foreach ($this->_connection as $conn) {
+            /* say goodbye to connection */
+            socket_close($conn->getSocket());
         }
         
-        posix_kill(getmypid(), $signal);
+        posix_kill($this->_listener, self::SIGTERM);
         socket_close($this->_server);
         unset($this->sockets);
         
@@ -196,38 +171,62 @@ class WebSocketServer {
     }
     
     /**
-     * Aids the correct creation of a thread
+     * Aids the correct creation of a connection thread
      * 
      * @param int $pid
      * @return WebSocketThread 
      */
-    public function createThread($socket) {
+    public function createConnection($socket) {
         
-        $threadPid = pcntl_fork();  
+        $connPid = pcntl_fork();  
         
         if ($threadPid == -1) {
             throw new Exception(
                     'Unable to create new connection thread'
             );
         } elseif ($threadPid) {
-            $this->_threads[$threadPid] = new WebSocketThread($threadPid, $socket);
-            $this->setLog("New thread created with PID {".$threadPid."} ", self::VERBOSE_INFORMATIVE);
+            $this->_connection[$connPid] = new WebSocketThread($connPid, $socket);
+            $this->setLog("New connection with pid {".$threadPid."}", self::VERBOSE_INFORMATIVE);
         } else {
-        
+            /* the actual thread */
         }
     }
     
-    public function destoryThread() {
-        
+    /**
+     * Find a socket by a connection
+     * 
+     * @param type $socket
+     * @return type 
+     */
+    public function findConnectionBySocket ($socket) {
+        foreach ($this->_connection as $conn) {
+            if ($conn->getSocket() == $socket) {
+                return $conn;
+            }
+        }
+        return false;
     }
     
+    /** 
+     * Destorys the connection, socket and it's the 
+     * assocated process.
+     * 
+     * @param type $socket 
+     */
+    public function destoryConnection($socket) {
+        $conn = $this->findConnectionBySocket($socket);
+        unset($this->_connection[$conn->getPid()]);
+        posix_kill($conn->getPid(), self::SIGTERM);
+        socket_close($socket);
+    }
+            
     /**
      * Signal a particular thread
      * 
      * @param WebSocketThread $thread
      * @param int $signal 
      */
-    public function signalThread(WebSocketThread $thread, $signal) {       
+    public function signalConnection(WebSocketThread $thread, $signal) {       
         if (!in_array($signal, self::$signals)) {
             throw new Exception('Unknown process signal');
         }
@@ -306,16 +305,19 @@ class WebSocketServer {
      * and echos the message depending on the verbose level
      *  
      * @param string $message
+     * @param int $verboseLevel
      * @return int msgId 
      */
-    public function setLog($message, $verboseLevel) {
+    public function setLog($message, $verboseLevel=self::VERBOSE_NORMAL) {
         $this->_log[] = array(
             'timestamp'     => date('Y-m-d H:i:s'),
             'message'       => $message,
             'verboseLevel'  => $verboseLevel
         );
         
-        echo '['.date('Y-m-d H:i:s').'] '.$message."\n";
+        if ($this->_serverVerbose <= $verboseLevel) {
+            echo '['.date('Y-m-d H:i:s').'] '.$message."\n";
+        }
         
         $i=0;
         return $i = count($this->_log) == 1 ? 0 : $i-1;  
@@ -361,7 +363,6 @@ class WebSocketServer {
                 'socket_create',
                 'socket_select',
                 'socket_set_option',
-                'posix_mkfifo'
             );
         }
     }
@@ -375,7 +376,7 @@ class WebSocketServer {
         foreach (self::$prerequisite as $preReq) {
             if (!function_exists($preReq)) {
                 throw new Exception(
-                        $preReq.' functions not available, please install'
+                        $preReq.' function is not available, please install'
                 );
             }
         }
